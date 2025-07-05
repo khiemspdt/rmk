@@ -4,28 +4,34 @@ install_crate = { rustup_component_name = "llvm-tools" }
 [tasks.flip-link]
 install_crate = { crate_name = "flip-link", binary = "flip-link", test_arg = ["-h"] }
 
-[tasks.objcopy]
-install_crate = { crate_name = "cargo-binutils", binary = "cargo", test_arg = [
-    "objcopy",
-    "--help",
-] }
+[tasks.build]
+description = "Build firmware for STM32G4"
 command = "cargo"
-args = ["objcopy", "--release", "--", "-O", "ihex", "rmk.hex"]
-dependencies = ["install-llvm-tools", "flip-link"]
+args = ["build", "--release", "--target", "thumbv7em-none-eabi"]
+dependencies = ["flip-link"]
+
+[tasks.flash]
+description = "Flash firmware to STM32G431CB using probe-rs"
+command = "probe-rs"
+args = ["download", "--chip", "stm32g431cb", "target/thumbv7em-none-eabi/release/rmk-stm32g4"]
+dependencies = ["flip-link"]
+
+[tasks.hex]
+description = "Build firmware and generate hex file for STM32G4"
+command = "cargo"
+args = ["objcopy", "--release", "--", "-O", "ihex", "rmk-stm32g4.hex"]
+dependencies = ["build", "install-llvm-tools"]
 
 [tasks.uf2]
-install_crate = { crate_name = "cargo-hex-to-uf2", binary = "cargo", test_arg = [
-    "hex-to-uf2",
-    "--help",
-] }
+description = "Build firmware and generate UF2 file for STM32G4"
 command = "cargo"
 args = [
     "hex-to-uf2",
     "--input-path",
-    "rmk.hex",
+    "rmk-stm32g4.hex",
     "--output-path",
-    "rmk.uf2",
+    "rmk-stm32g4.uf2",
     "--family",
     "stm32g4",
 ]
-dependencies = ["objcopy"]
+dependencies = ["hex"]
