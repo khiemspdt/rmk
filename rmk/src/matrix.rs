@@ -229,6 +229,165 @@ impl<
     }
 }
 
+#[cfg(feature = "muxmatrix")]
+/// Platform-agnostic MuxMatrix for CD74HC4067 multiplexers.
+pub struct MuxMatrix<
+    S: OutputPin,
+    ADC,
+    DMA,
+    P,
+    D: DebouncerTrait,
+    const NUM_OUTPUTS: usize,
+    const MUX_COUNT: usize,
+    const CHANNEL_COUNT: usize,
+> {
+    /// S0-S3 output pins (shared by all MUX chips)
+    s_pins: [S; NUM_OUTPUTS],
+    /// ADC peripheral
+    adc: ADC,
+    /// DMA channel
+    dma: DMA,
+    /// MUX COM analog input pins (each is a Channel)
+    input_pins: [P; MUX_COUNT],
+    /// Debouncer
+    debouncer: D,
+    /// Key state matrix
+    key_states: [[KeyState; CHANNEL_COUNT]; MUX_COUNT],
+    /// ADC read buffer
+    read_buffer: [u16; MUX_COUNT],
+    /// Hardcoded threshold
+    threshold: u16,
+}
+
+#[cfg(feature = "muxmatrix")]
+impl<
+        S: OutputPin,
+        ADC,
+        DMA,
+        P,
+        D: DebouncerTrait,
+        const NUM_OUTPUTS: usize,
+        const MUX_COUNT: usize,
+        const CHANNEL_COUNT: usize,
+    > MuxMatrix<S, ADC, DMA, P, D, NUM_OUTPUTS, MUX_COUNT, CHANNEL_COUNT>
+{
+    pub fn new(
+        s_pins: [S; NUM_OUTPUTS],
+        adc: ADC,
+        dma: DMA,
+        input_pins: [P; MUX_COUNT],
+        debouncer: D,
+        threshold: u16,
+    ) -> Self {
+        Self {
+            s_pins,
+            adc,
+            dma,
+            input_pins,
+            debouncer,
+            key_states: [[KeyState::new(); CHANNEL_COUNT]; MUX_COUNT],
+            read_buffer: [0; MUX_COUNT],
+            threshold,
+        }
+    }
+
+    /// Set S0-S3 pins to select a channel (0..CHANNEL_COUNT-1)
+    fn set_channel(&mut self, channel: usize) {
+        for (i, pin) in self.s_pins.iter_mut().enumerate() {
+            if ((channel >> i) & 1) == 1 {
+                let _ = pin.set_high();
+            } else {
+                let _ = pin.set_low();
+            }
+        }
+    }
+}
+
+#[cfg(feature = "muxmatrix")]
+impl<'d, D: DebouncerTrait, const NUM_OUTPUTS: usize, const MUX_COUNT: usize, const CHANNEL_COUNT: usize>
+    MuxMatrix<
+        embassy_stm32::gpio::Output<'d>,
+        embassy_stm32::adc::Adc<'d, embassy_stm32::peripherals::ADC2>,
+        embassy_stm32::peripherals::DMA1_CH2,
+        embassy_stm32::adc::AnyAdcChannel<embassy_stm32::peripherals::ADC2>,
+        D,
+        NUM_OUTPUTS,
+        MUX_COUNT,
+        CHANNEL_COUNT,
+    >
+{
+    /// Platform-specific async scan and update for STM32G4/embassy-stm32
+    pub async fn scan_and_update(&mut self) -> Option<crate::event::Event> {
+        use embassy_stm32::adc::SampleTime;
+        use heapless::Vec;
+        for channel in 0..CHANNEL_COUNT {
+            self.set_channel(channel);
+            embassy_time::Timer::after_micros(1).await;
+            let mut pin_refs: Vec<
+                (
+                    &mut embassy_stm32::adc::AnyAdcChannel<embassy_stm32::peripherals::ADC2>,
+                    SampleTime,
+                ),
+                NUM_OUTPUTS,
+            > = Vec::new();
+            for pin in self.input_pins.iter_mut() {
+                pin_refs.push((pin, SampleTime::CYCLES247_5)).ok();
+            }
+            self.adc
+                .read(
+                    &mut self.dma,
+                    pin_refs.iter_mut().map(|(p, s)| (&mut **p, *s)),
+                    &mut self.read_buffer,
+                )
+                .await;
+            // For each input pin (MUX chip)
+            for (mux_idx, &adc_value) in self.read_buffer.iter().enumerate() {
+                let pressed = adc_value > self.threshold;
+                let debounce_state = self.debouncer.detect_change_with_debounce(
+                    mux_idx,
+                    channel,
+                    pressed,
+                    &self.key_states[mux_idx][channel],
+                );
+                if let crate::debounce::DebounceState::Debounced = debounce_state {
+                    self.key_states[mux_idx][channel].toggle_pressed();
+                    return Some(crate::event::Event::Key(crate::event::KeyEvent {
+                        row: mux_idx as u8,
+                        col: channel as u8,
+                        pressed: self.key_states[mux_idx][channel].pressed,
+                    }));
+                }
+            }
+        }
+        None
+    }
+}
+
+#[cfg(feature = "muxmatrix")]
+#[allow(unused_mut)]
+impl<'d, D: DebouncerTrait, const NUM_OUTPUTS: usize, const MUX_COUNT: usize, const CHANNEL_COUNT: usize> InputDevice
+    for MuxMatrix<
+        embassy_stm32::gpio::Output<'d>,
+        embassy_stm32::adc::Adc<'d, embassy_stm32::peripherals::ADC2>,
+        embassy_stm32::peripherals::DMA1_CH2,
+        embassy_stm32::adc::AnyAdcChannel<embassy_stm32::peripherals::ADC2>,
+        D,
+        NUM_OUTPUTS,
+        MUX_COUNT,
+        CHANNEL_COUNT,
+    >
+{
+    async fn read_event(&mut self) -> crate::event::Event {
+        // Platform-specific: poll scan_and_update until an event is returned
+        loop {
+            if let Some(event) = self.scan_and_update().await {
+                return event;
+            }
+            embassy_time::Timer::after_millis(1).await;
+        }
+    }
+}
+
 pub struct TestMatrix<const ROW: usize, const COL: usize> {
     last: bool,
 }
