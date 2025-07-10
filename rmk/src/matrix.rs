@@ -247,7 +247,7 @@ pub struct MuxMatrix<
     adc: ADC,
     /// DMA channel
     dma: DMA,
-    /// MUX COM analog input pins (each is a Channel)
+    /// MUX COM analog input pins with sample times (each is a Channel with SampleTime)
     input_pins: [P; MUX_COUNT],
     /// Debouncer
     debouncer: D,
@@ -318,28 +318,21 @@ impl<'d, D: DebouncerTrait, const NUM_OUTPUTS: usize, const MUX_COUNT: usize, co
 {
     /// Platform-specific async scan and update for STM32G4/embassy-stm32
     pub async fn scan_and_update(&mut self) -> Option<crate::event::Event> {
-        use embassy_stm32::adc::SampleTime;
-        use heapless::Vec;
         for channel in 0..CHANNEL_COUNT {
             self.set_channel(channel);
             embassy_time::Timer::after_micros(1).await;
-            let mut pin_refs: Vec<
-                (
-                    &mut embassy_stm32::adc::AnyAdcChannel<embassy_stm32::peripherals::ADC2>,
-                    SampleTime,
-                ),
-                NUM_OUTPUTS,
-            > = Vec::new();
-            for pin in self.input_pins.iter_mut() {
-                pin_refs.push((pin, SampleTime::CYCLES247_5)).ok();
-            }
+
+            // Use the pre-configured input pins directly
             self.adc
                 .read(
                     &mut self.dma,
-                    pin_refs.iter_mut().map(|(p, s)| (&mut **p, *s)),
+                    self.input_pins
+                        .iter_mut()
+                        .map(|pin| (pin, embassy_stm32::adc::SampleTime::CYCLES247_5)),
                     &mut self.read_buffer,
                 )
                 .await;
+
             // For each input pin (MUX chip)
             for (mux_idx, &adc_value) in self.read_buffer.iter().enumerate() {
                 let pressed = adc_value > self.threshold;

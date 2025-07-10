@@ -4,10 +4,16 @@ install_crate = { rustup_component_name = "llvm-tools" }
 [tasks.flip-link]
 install_crate = { crate_name = "flip-link", binary = "flip-link", test_arg = ["-h"] }
 
-[tasks.build]
+[tasks.build_release]
 description = "Build firmware for STM32G4"
 command = "cargo"
 args = ["build", "--release", "--target", "thumbv7em-none-eabi"]
+dependencies = ["flip-link"]
+
+[tasks.build_debug]
+description = "Build firmware for STM32G4"
+command = "cargo"
+args = ["build", "--target", "thumbv7em-none-eabi"]
 dependencies = ["flip-link"]
 
 [tasks.flash]
